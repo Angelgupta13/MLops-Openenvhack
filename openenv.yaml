@@ -1,0 +1,55 @@
+name: mlops-debug-env
+version: "1.0.0"
+description: >
+  MLOps Pipeline Debugger: an AI agent acts as a senior ML engineer
+  investigating a broken training run. The environment procedurally generates
+  realistic training artifacts (logs, configs, preprocessing code, eval results)
+  with one planted fault. The agent must systematically investigate and submit
+  a structured diagnosis. Three tasks: config error (easy) → data leakage (medium)
+  → silent evaluation bug (hard). All graders are fully deterministic.
+author: Mohit Goyal
+license: MIT
+tags: [openenv, rl, mlops, debugging, machine-learning, agents]
+tasks:
+  - id: easy
+    name: Config Error Diagnosis
+    difficulty: easy
+    max_steps: 20
+    bug_pool: [exploding_lr, wrong_optimizer, batch_size_overflow]
+    reward_range: [0.0, 1.0]
+  - id: medium
+    name: Data Leakage Detection
+    difficulty: medium
+    max_steps: 30
+    bug_pool: [data_leakage_scaler, data_leakage_overlap, wrong_split_ratio]
+    reward_range: [0.0, 1.0]
+  - id: hard
+    name: Silent Evaluation Bug
+    difficulty: hard
+    max_steps: 40
+    bug_pool: [label_encoder_mismatch, silent_metric_swap, tokenizer_version_drift]
+    reward_range: [0.0, 1.0]
+    asymmetric_penalty: true
+action_space:
+  type: discrete_structured
+  actions: [read_config, read_logs, check_dataset_stats, inspect_preprocessing,
+            read_eval_results, run_sanity_check, query_artifact, submit_diagnosis]
+observation_space:
+  type: structured_text
+  fields: [task_id, run_summary, available_artifacts, artifacts_read,
+           last_action_result, step_count, max_steps, done, messages]
+reward:
+  type: dense_and_terminal
+  per_step: "+0.02 new artifact read, -0.02 duplicate read, +0.01 new sanity check"
+  terminal: "0.15 category + 0.25 file + 0.30 field + 0.30 fix. Hard task 1.5x penalty."
+api:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  health: GET /health
+  websocket: /ws
+runtime:
+  port: 7860
+  workers: 1
+  framework: fastapi
+  python: "3.11"
