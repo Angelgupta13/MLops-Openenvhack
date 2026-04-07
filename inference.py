@@ -261,10 +261,12 @@ def parse_action(text: str) -> Optional[Dict[str, Any]]:
 
 _last_call_time = 0
 _MIN_CALL_INTERVAL = 2.0
+_HARD_ALT_USED = False
 
 
-def call_llm(messages: List[Dict]) -> str:
+def call_llm(messages: List[Dict], model_name: Optional[str] = None) -> str:
     global _last_call_time
+    model_to_use = model_name or MODEL_NAME
     for attempt in range(10):
         try:
             elapsed = time.time() - _last_call_time
@@ -272,7 +274,7 @@ def call_llm(messages: List[Dict]) -> str:
                 time.sleep(_MIN_CALL_INTERVAL - elapsed)
 
             resp = client.chat.completions.create(
-                model=MODEL_NAME, messages=messages, max_tokens=512, temperature=0.1
+                model=model_to_use, messages=messages, max_tokens=512, temperature=0.1
             )
             _last_call_time = time.time()
             return resp.choices[0].message.content.strip()
