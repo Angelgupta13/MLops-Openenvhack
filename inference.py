@@ -441,12 +441,36 @@ def run_task(task_id: str, seed: int = 42) -> float:
                 sc = action.get("sanity_check_type", "")
                 sanity_check_history.append(sc)
 
-        # Block premature submissions
-        if action.get("action_type") == "submit_diagnosis" and step_num < min_steps:
-            if all_read:
-                action = force_new_sanity_check()
-            else:
-                action = get_next_unread_artifact() or force_new_sanity_check()
+        # Enforce hard rubric before allowing hard submit
+        if action.get("action_type") == "submit_diagnosis" and task_id == "hard":
+            artifacts_read = obs.get("artifacts_read", [])
+            if (
+                len(artifacts_read) < 3
+                or len(sanity_check_history) < 3
+                or step_num < min_steps
+            ):
+                action = get_fallback_action(step_num)
+                log_step(
+                    step=step_num,
+                    action=action["action_type"],
+                    reward=0,
+                    done=False,
+                    error=None,
+                )
+                result = env_step(action)
+                new_obs = result["observation"]
+                reward = result["reward"]
+                done = result["done"]
+                info = result.get("info", {})
+                rewards.append(reward)
+                # Continue with the next loop iteration
+                if done:
+                    final_score = info.get("score", reward)
+                    break
+                obs = new_obs
+                messages.append({"role": "assistant", "content": llm_out})
+                messages.append({"role": "user", "content": build_user_msg(new_obs)})
+                continue
 
         # Execute action
         result = env_step(action)
