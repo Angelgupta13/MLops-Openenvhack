@@ -261,7 +261,37 @@ def parse_action(text: str) -> Optional[Dict[str, Any]]:
 
 _last_call_time = 0
 _MIN_CALL_INTERVAL = 2.0
-_HARD_ALT_USED = False
+from openenv_state import OPENENV_STATE, OpenEnvState
+import json as _json
+
+# For hard fallback guard
+_HARD_FALLBACK_USED = False
+
+
+def _update_openenv_state(
+    run_id: str,
+    task_id: str,
+    seed: int,
+    step_count: int,
+    max_steps: int,
+    end_score: float,
+    rewards: List[float],
+    artifacts_read: List[str],
+) -> None:
+    ts = __import__("datetime").datetime.utcnow().isoformat()
+    OPENENV_STATE.run_id = run_id
+    OPENENV_STATE.task_id = task_id
+    OPENENV_STATE.seed = seed
+    OPENENV_STATE.step_count = step_count
+    OPENENV_STATE.max_steps = max_steps
+    OPENENV_STATE.end_score = end_score
+    OPENENV_STATE.rewards = rewards
+    OPENENV_STATE.artifacts_read = artifacts_read
+    OPENENV_STATE.timestamp = ts
+    OPENENV_STATE.scores[task_id] = end_score
+
+
+_HARD_FALLBACK_USED = False
 
 
 def call_llm(messages: List[Dict], model_name: Optional[str] = None) -> str:
@@ -319,6 +349,7 @@ def get_fallback_action(step_num: int) -> Dict[str, Any]:
 
 
 def run_task(task_id: str, seed: int = 42, alt_model: Optional[str] = None) -> float:
+    global _HARD_FALLBACK_USED
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     obs = env_reset(task_id, seed)
@@ -464,13 +495,20 @@ def run_task(task_id: str, seed: int = 42, alt_model: Optional[str] = None) -> f
                 info = result.get("info", {})
                 rewards.append(reward)
                 # Continue with the next loop iteration
-        if done:
-            final_score = info.get("score", reward)
-            if task_id == "hard" and final_score < 0.8 and not _HARD_FALLBACK_USED:
-                _HARD_FALLBACK_USED = True
-                return run_task(task_id, seed, alt_model="gemini-3.1-pro-preview")
-            break
+                if done:
+                    final_score = info.get("score", reward)
+                    if (
+                        task_id == "hard"
+                        and final_score < 0.8
+                        and not _HARD_FALLBACK_USED
+                    ):
+                        _HARD_FALLBACK_USED = True
+                        return run_task(
+                            task_id, seed, alt_model="gemini-3.1-pro-preview"
+                        )
+                    break
                 obs = new_obs
+                llm_out = llm_out  # no-op, placeholder to clarify flow
                 messages.append({"role": "assistant", "content": llm_out})
                 messages.append({"role": "user", "content": build_user_msg(new_obs)})
                 continue
