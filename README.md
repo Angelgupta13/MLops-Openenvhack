@@ -4,6 +4,17 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-green)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
+## Latest Baseline Scores
+
+| Task | Score |
+|------|-------|
+| Easy | 0.91 |
+| Medium | 0.85 |
+| Hard | 1.00 |
+| **Average** | **0.92** |
+
+*Tested with Gemini 2.5 Flash + Gemini 3.1 Pro Preview fallback for hard task*
+
 An **OpenEnv-compatible reinforcement learning environment** where an AI agent acts as a senior ML engineer diagnosing a broken training run.
 
 ---
