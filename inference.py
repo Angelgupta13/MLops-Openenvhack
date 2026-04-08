@@ -187,10 +187,14 @@ def log_step(
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(
+    success: bool, steps: int, score: float = 0.0, rewards: List[float] = None
+) -> None:
+    if rewards is None:
+        rewards = []
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -559,7 +563,7 @@ def run_task(task_id: str, seed: int = 42, alt_model: Optional[str] = None) -> f
             messages = [messages[0], messages[1]] + messages[-26:]
 
     success = final_score >= SUCCESS_THRESHOLD
-    log_end(success=success, steps=step_num, rewards=rewards)
+    log_end(success=success, steps=step_num, score=final_score, rewards=rewards)
     return final_score
 
 
