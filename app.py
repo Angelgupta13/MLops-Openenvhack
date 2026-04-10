@@ -14,9 +14,7 @@ app = FastAPI(
     description="OpenEnv environment: AI agent diagnoses broken ML training runs.",
     version="1.0.0",
 )
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _http_env: Optional[MLOpsEnvironment] = None
 
@@ -114,18 +112,24 @@ async def step(request: Request):
 
     # Handle various input formats
     action = None
-    if "action_type" in body:
-        action = MLOpsAction(**body)
-    elif "action" in body:
-        action = MLOpsAction(**body["action"])
-    elif "message" in body:
-        action = MLOpsAction(action_type=body["message"])
+    try:
+        if "action_type" in body:
+            action = MLOpsAction(**body)
+        elif "action" in body:
+            action = MLOpsAction(**body["action"])
+        elif "message" in body:
+            action = MLOpsAction(action_type=body["message"])
+    except Exception as e:
+        raise HTTPException(422, f"Invalid action: {str(e)}")
 
     if action is None or action.action_type is None:
         raise HTTPException(422, "Field required: action_type")
 
-    obs, reward, done, info = _http_env.step(action)
-    return StepResponse(observation=obs, reward=reward, done=done, info=info)
+    try:
+        obs, reward, done, info = _http_env.step(action)
+        return StepResponse(observation=obs, reward=reward, done=done, info=info)
+    except Exception as e:
+        raise HTTPException(500, f"Step error: {str(e)}")
 
 
 @app.get("/state", response_model=MLOpsState)
