@@ -36,7 +36,10 @@ class StepResponse(BaseModel):
 
 @app.post("/reset", response_model=MLOpsObservation)
 async def reset(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     task_id = body.get("task_id") or body.get("task") or "easy"
     seed = body.get("seed")
     global _http_env
@@ -104,7 +107,10 @@ async def step(request: Request):
         raise HTTPException(400, "Call /reset first.")
 
     # Get raw body as dict
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
 
     # Handle various input formats
     action = None
