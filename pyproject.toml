@@ -1,0 +1,38 @@
+[project]
+name = "mlops-openenv"
+version = "1.0.0"
+description = "MLOps Pipeline Debugger - OpenEnv-compatible RL environment for ML training debugging"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "MLOps Team"}]
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.9.0",
+    "httpx>=0.27.0",
+    "openai>=1.51.0",
+    "websockets>=13.0",
+    "numpy>=1.26.0",
+    "python-multipart>=0.0.12",
+    "dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
