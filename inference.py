@@ -34,7 +34,7 @@ API_BASE_URL = os.getenv(
 )
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 HF_TOKEN = os.getenv("GEMINI_API_KEY", os.getenv("HF_TOKEN", ""))
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "https://angelgupta-mlops-openenv.hf.space")
 BENCHMARK = "mlops-debug-env"
 TASKS = ["easy", "medium", "hard"]
 SUCCESS_THRESHOLD = 0.5
