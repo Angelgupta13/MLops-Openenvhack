@@ -38,3 +38,6 @@ checkpoints/
 # Temporary files
 *.tmp
 temp/
+
+# Research paper (private)
+paper/
