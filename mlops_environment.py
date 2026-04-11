@@ -168,7 +168,7 @@ class MLOpsEnvironment:
 
         if self._step_count >= self._max_steps:
             self._done = True
-            score = self._current_score
+            score = max(0.01, self._current_score)
             result = {"status": "timeout", "message": f"Max steps ({self._max_steps}) reached.", "score": score}
             return self._build_obs(result), 0.0, True, {"score": score, "reason": "timeout"}
 
@@ -344,7 +344,7 @@ class MLOpsEnvironment:
             score -= missed * 0.5   # 1.5× penalty on missed components
             breakdown["hard_task_penalty_applied"] = True
 
-        score = round(max(0.0, min(1.0, score)), 4)
+        score = round(max(0.01, min(0.99, score)), 4)
         self._current_score = score
 
         info = {
