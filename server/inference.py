@@ -188,10 +188,12 @@ def log_step(
 
 
 def log_end(
-    success: bool, steps: int, score: float = 0.0, rewards: List[float] = None
+    success: bool, steps: int, score: float = 0.01, rewards: List[float] = None
 ) -> None:
     if rewards is None:
         rewards = []
+    # Ensure score is strictly between 0 and 1
+    score = max(0.01, min(0.99, score))
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}",
@@ -284,11 +286,11 @@ def _update_openenv_state(
     OPENENV_STATE.seed = seed
     OPENENV_STATE.step_count = step_count
     OPENENV_STATE.max_steps = max_steps
-    OPENENV_STATE.end_score = end_score
+    OPENENV_STATE.end_score = max(0.01, min(0.99, end_score))
     OPENENV_STATE.rewards = rewards
     OPENENV_STATE.artifacts_read = artifacts_read
     OPENENV_STATE.timestamp = ts
-    OPENENV_STATE.scores[task_id] = end_score
+    OPENENV_STATE.scores[task_id] = max(0.01, min(0.99, end_score))
 
 
 def call_llm(messages: List[Dict], model_name: Optional[str] = None) -> str:
@@ -572,6 +574,8 @@ def run_task(task_id: str, seed: int = 42) -> float:
     except Exception as e:
         print(f"  [ERROR] Task {task_id} failed: {e}", flush=True, file=sys.stderr)
     finally:
+        # Validator requires scores strictly between 0 and 1
+        final_score = max(0.01, min(0.99, final_score))
         success = final_score >= SUCCESS_THRESHOLD
         log_end(success=success, steps=step_num, score=final_score, rewards=rewards)
 

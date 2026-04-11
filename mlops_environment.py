@@ -144,7 +144,7 @@ class MLOpsEnvironment:
         self._last_read_filters: Dict[str, str] = {}
         self._sanity_checks_run: List[str] = []
         self._duplicate_queries = 0
-        self._current_score = 0.0
+        self._current_score = 0.01
         self._messages: List[str] = []
 
     # ── OpenEnv API ───────────────────────────────────────────────────────────
