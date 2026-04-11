@@ -5,51 +5,114 @@ description: >
   investigating a broken training run. The environment procedurally generates
   realistic training artifacts (logs, configs, preprocessing code, eval results)
   with one planted fault. The agent must systematically investigate and submit
-  a structured diagnosis. Three tasks: config error (easy) → data leakage (medium)
-  → silent evaluation bug (hard). All graders are fully deterministic.
-author: Mohit Goyal
+  a structured diagnosis. Three tasks: config error (easy) -> data leakage (medium)
+  -> silent evaluation bug (hard). All graders are fully deterministic.
+author: Code Clashers
 license: MIT
-tags: [openenv, rl, mlops, debugging, machine-learning, agents]
+tags: [openenv, rl, mlops, debugging, machine-learning, agents, pytorch]
+
+grading:
+  type: deterministic
+  judge: none
+  method: keyword_and_substring_matching
+  reproducible: true
+
 tasks:
   - id: easy
     name: Config Error Diagnosis
     difficulty: easy
     max_steps: 20
     bug_pool: [exploding_lr, wrong_optimizer, batch_size_overflow]
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
+    description: >
+      Diagnose a training failure caused by a hyperparameter misconfiguration.
+      Symptoms are visible in training logs (loss explosion, oscillation, trivial overfitting).
+
   - id: medium
     name: Data Leakage Detection
     difficulty: medium
     max_steps: 30
     bug_pool: [data_leakage_scaler, data_leakage_overlap, wrong_split_ratio]
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
+    description: >
+      Identify data leakage in the preprocessing pipeline. Val accuracy is suspiciously
+      high from epoch 1, but test performance tells a different story. Requires correlating
+      logs, eval results, and preprocessing code.
+
   - id: hard
     name: Silent Evaluation Bug
     difficulty: hard
     max_steps: 40
     bug_pool: [label_encoder_mismatch, silent_metric_swap, tokenizer_version_drift]
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
     asymmetric_penalty: true
+    penalty_multiplier: 1.5
+    description: >
+      Find a silent bug in the evaluation pipeline. Training logs look completely normal.
+      No errors, no warnings. Only a val/test metric gap reveals the issue. Requires
+      reasoning about what is absent rather than what is present.
+
 action_space:
   type: discrete_structured
-  actions: [read_config, read_logs, check_dataset_stats, inspect_preprocessing,
-            read_eval_results, run_sanity_check, query_artifact, submit_diagnosis]
+  actions:
+    - read_config
+    - read_logs
+    - check_dataset_stats
+    - inspect_preprocessing
+    - read_eval_results
+    - run_sanity_check
+    - query_artifact
+    - submit_diagnosis
+  sanity_check_types:
+    - label_consistency
+    - data_leakage
+    - gradient_norms
+    - class_balance
+    - feature_statistics
+    - encoder_version_match
+    - loss_trajectory
+    - metric_gap_analysis
+
 observation_space:
   type: structured_text
-  fields: [task_id, run_summary, available_artifacts, artifacts_read,
-           last_action_result, step_count, max_steps, done, messages]
+  fields:
+    - task_id
+    - task_description
+    - run_id
+    - run_summary
+    - available_artifacts
+    - artifacts_read
+    - last_action_result
+    - step_count
+    - max_steps
+    - done
+    - messages
+
 reward:
   type: dense_and_terminal
-  per_step: "+0.02 new artifact read, -0.02 duplicate read, +0.01 new sanity check"
-  terminal: "0.15 category + 0.25 file + 0.30 field + 0.30 fix. Hard task 1.5x penalty."
+  per_step:
+    new_artifact_read: +0.02
+    duplicate_read: -0.02
+    new_sanity_check: +0.01
+  terminal:
+    failure_category: +0.15
+    root_cause_file: +0.25
+    root_cause_field: +0.30
+    proposed_fix: +0.30
+  hard_task_penalty: "if score < 0.70, additional 0.5x on missed components"
+
 api:
   reset: POST /reset
   step: POST /step
   state: GET /state
   health: GET /health
+  tasks: GET /tasks
+  openenv_state: GET /openenv/state
   websocket: /ws
+
 runtime:
   port: 7860
   workers: 1
   framework: fastapi
   python: "3.11"
+  container: docker

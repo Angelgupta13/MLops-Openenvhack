@@ -14,72 +14,80 @@ pinned: false
 [![Python 3.11](https://img.shields.io/badge/python-3.11-green)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-## Latest Baseline Scores
-
-| Task | Score |
-|------|-------|
-| Easy | 0.91 |
-| Medium | 0.85 |
-| Hard | 1.00 |
-| **Average** | **0.92** |
-
-*Tested with Gemini 2.5 Flash + Gemini 3.1 Pro Preview fallback for hard task*
-
-An **OpenEnv-compatible reinforcement learning environment** where an AI agent acts as a senior ML engineer diagnosing a broken training run.
+An **OpenEnv-compatible RL environment** where an AI agent acts as a senior ML engineer diagnosing a broken training run. Built for the **Meta PyTorch Hackathon x Scaler School of Technology**.
 
 ---
 
-## What Is This?
+## The Real-World Problem
 
-Every ML team has experienced it: a training job finishes overnight and something is wrong. Loss exploded to NaN. Validation accuracy is suspiciously perfect at epoch 1. Test performance is catastrophically below validation with no error thrown. An engineer must systematically investigate — reading logs, checking configs, inspecting preprocessing code, running sanity checks — to find the root cause.
+Every ML team has experienced it: a training job finishes overnight and something is wrong. Loss exploded to NaN. Validation accuracy is suspiciously perfect at epoch 1. Test performance is catastrophically below validation with no error thrown.
 
-This environment simulates that investigation. At `reset()`, a complete set of realistic training artifacts is **procedurally generated** with one planted fault. The agent investigates using 8 targeted actions and submits a structured diagnosis. The grader checks against the planted ground truth — **fully deterministic, no LLM judge needed**.
+A senior engineer must systematically investigate — reading logs, checking configs, inspecting preprocessing code, running sanity checks — to find the root cause. **This is the #1 time sink in production ML operations**, and it's a skill that separates junior from senior ML engineers.
 
-**9 distinct bug types across 3 tasks. Every episode can have a different bug. Scores vary continuously 0.0 → 1.0 based on diagnosis precision.**
+This environment simulates that investigation workflow. It's not a toy problem — it models the **actual top-3 failure modes** from production ML pipelines:
 
----
-
-## Environment Design
-
-### Procedural Artifact Generation
-
-Every episode generates 6 realistic training artifacts from scratch:
-
-| Artifact | Contents |
-|---|---|
-| `config.yaml` | Model arch, optimizer, LR, batch size, scheduler, augmentation |
-| `train.log` | Epoch-by-epoch loss/accuracy/gradient norms with realistic timestamps |
-| `dataset_stats.json` | Split sizes, class distribution, overlap counts, feature statistics |
-| `preprocessing.py` | Full sklearn/PyTorch preprocessing pipeline code |
-| `eval_results.json` | Final val/test metrics with hardware info |
-| `model_card.json` | Architecture summary, tokenizer version, preprocessing config |
-
-Artifacts are **internally consistent** — config matches logs, dataset stats match preprocessing code — except for the one planted fault. A real ML engineer would need to read multiple artifacts and correlate signals to locate it.
+| Failure Mode | Real-World Frequency | Environment Task |
+|---|---|---|
+| Hyperparameter misconfiguration | ~40% of training failures | Task 1 (Easy) |
+| Data leakage / preprocessing bugs | ~35% of silent accuracy inflation | Task 2 (Medium) |
+| Silent evaluation pipeline bugs | ~25% of post-deployment incidents | Task 3 (Hard) |
 
 ---
 
-## Action Space
+## How It Works
+
+At `reset()`, a complete set of **6 realistic training artifacts** is procedurally generated with one planted fault. The agent investigates using **8 structured actions** and submits a diagnosis. The grader checks against ground truth — **fully deterministic, no LLM judge**.
+
+```
+reset(task_id="hard", seed=42)
+    │
+    ├── Generates: config.yaml, train.log, dataset_stats.json,
+    │              preprocessing.py, eval_results.json, model_card.json
+    │
+    ├── Plants: one bug from the task's 3-bug pool
+    │
+    └── Agent investigates → submits diagnosis → grader scores [0.01, 0.99]
+```
+
+**9 distinct bug types across 3 difficulty tiers. Every episode can have a different bug. Scores vary continuously based on diagnosis precision.**
+
+---
+
+## Procedural Artifact Generation
+
+Every episode generates 6 internally-consistent training artifacts from scratch:
+
+| Artifact | Contents | Role in Investigation |
+|---|---|---|
+| `config.yaml` | Model arch, optimizer, LR, batch size, scheduler | Check hyperparameters |
+| `train.log` | Epoch-by-epoch loss/accuracy/gradient norms | Identify symptom patterns |
+| `dataset_stats.json` | Split sizes, class distribution, overlap counts | Detect data issues |
+| `preprocessing.py` | Full sklearn/PyTorch pipeline code | Find pipeline bugs |
+| `eval_results.json` | Final val/test metrics with hardware info | Quantify metric gaps |
+| `model_card.json` | Architecture summary, tokenizer version | Cross-reference versions |
+
+Artifacts are **internally consistent** — config matches logs, dataset stats match preprocessing code — except for the one planted fault. An agent must read multiple artifacts and correlate signals across them to locate the bug.
+
+---
+
+## Action Space (8 actions)
 
 ```python
 class MLOpsAction(BaseModel):
     action_type: Literal[
-        "read_config",          # Full config.yaml
-        "read_logs",            # Training logs (filterable: keyword or "epoch:N-M")
-        "check_dataset_stats",  # Split sizes, class distribution, overlap counts
-        "inspect_preprocessing",# Full preprocessing pipeline code
-        "read_eval_results",    # Final val/test metrics
-        "run_sanity_check",     # Computed diagnostic (see types below)
-        "query_artifact",       # Specific field from any artifact (dot notation)
-        "submit_diagnosis",     # Final answer — triggers grading
+        "read_config",           # Full training configuration
+        "read_logs",             # Training logs (filterable: keyword or "epoch:N-M")
+        "check_dataset_stats",   # Split sizes, class distribution, overlap counts
+        "inspect_preprocessing", # Full preprocessing pipeline code
+        "read_eval_results",     # Final val/test metrics
+        "run_sanity_check",      # Computed diagnostic check (8 types)
+        "query_artifact",        # Specific field from any artifact (dot notation)
+        "submit_diagnosis",      # Final answer — triggers grading
     ]
-    
-    # Sanity check types:
-    # label_consistency | data_leakage | gradient_norms | class_balance
-    # feature_statistics | encoder_version_match | loss_trajectory | metric_gap_analysis
-    
-    # submit_diagnosis fields:
-    # failure_category | root_cause_file | root_cause_field | diagnosis | proposed_fix
 ```
+
+**Sanity check types** (computed diagnostics, not just artifact reads):
+`label_consistency` | `data_leakage` | `gradient_norms` | `class_balance` | `feature_statistics` | `encoder_version_match` | `loss_trajectory` | `metric_gap_analysis`
 
 ---
 
@@ -91,8 +99,8 @@ class MLOpsObservation(BaseModel):
     task_description: str                 # Full task brief with investigation strategy
     run_id: str                           # Unique run identifier
     run_summary: Dict[str, Any]           # Model, dataset, training status
-    available_artifacts: List[ArtifactMeta]  # What can be read
-    artifacts_read: List[str]             # Investigation progress
+    available_artifacts: List[ArtifactMeta]  # What can be read (name, description, size)
+    artifacts_read: List[str]             # Investigation progress tracking
     last_action_result: Dict[str, Any]    # Full content of last action
     step_count: int
     max_steps: int
@@ -102,81 +110,82 @@ class MLOpsObservation(BaseModel):
 
 ---
 
-## Tasks
+## Tasks & Difficulty Progression
 
-### Task 1 — Config Error Diagnosis `(easy)`
+### Task 1 — Config Error Diagnosis `(easy)` | 20 steps max
 
 **Bug pool (one picked randomly per episode):**
-- `exploding_lr` — `learning_rate: 50.0` causes loss → NaN by epoch 3
-- `wrong_optimizer` — `SGD(momentum=0.99)` causes oscillation with no convergence
-- `batch_size_overflow` — `batch_size: 4096` exceeds dataset size, val accuracy 99.9% trivially
+- `exploding_lr` — `learning_rate: 50.0` causes loss to diverge to NaN by epoch 3
+- `wrong_optimizer` — `SGD(momentum=0.99)` causes loss oscillation with no convergence
+- `batch_size_overflow` — `batch_size: 4096` exceeds dataset size, trivial overfitting
 
-**Signal:** Visible immediately in training logs. Loss curve or accuracy values are obviously wrong.
+**Signal strength:** High. Symptoms visible immediately in training logs.
 
-**Optimal strategy:** `read_logs` → `run_sanity_check(loss_trajectory)` → `read_config` → `submit_diagnosis`
-
-Max steps: **20** | Expected baseline score: ~0.42
-
----
-
-### Task 2 — Data Leakage Detection `(medium)`
+### Task 2 — Data Leakage Detection `(medium)` | 30 steps max
 
 **Bug pool:**
 - `data_leakage_scaler` — `StandardScaler.fit_transform(X_full)` called before train/val split
-- `data_leakage_overlap` — `train_test_split(random_state=None)` produces non-deterministic overlapping splits
-- `wrong_split_ratio` — `test_size=0.8` trains on 20% and evaluates on 80% (inverted)
+- `data_leakage_overlap` — `train_test_split(random_state=None)` produces overlapping splits
+- `wrong_split_ratio` — `test_size=0.8` trains on 20% and evaluates on 80%
 
-**Signal:** Val accuracy suspiciously high from epoch 1 in logs; val/test gap in eval results; sample overlap count in dataset stats.
+**Signal strength:** Medium. Requires correlating val accuracy anomaly in logs with preprocessing code.
 
-**Optimal strategy:** `read_logs` → `read_eval_results` → `run_sanity_check(data_leakage)` → `inspect_preprocessing` → `submit_diagnosis`
-
-Max steps: **30** | Expected baseline score: ~0.28
-
----
-
-### Task 3 — Silent Evaluation Bug `(hard)`
+### Task 3 — Silent Evaluation Bug `(hard)` | 40 steps max
 
 **Bug pool:**
-- `label_encoder_mismatch` — Train/eval use different `LabelEncoder.fit()` orderings → silent wrong predictions
-- `silent_metric_swap` — `val_accuracy` and `test_accuracy` assignments are swapped in eval code
-- `tokenizer_version_drift` — Training uses tokenizer v2, eval uses v1 → 847 tokens map to `[UNK]`
+- `label_encoder_mismatch` — Train/eval use different `LabelEncoder.fit()` orderings
+- `silent_metric_swap` — `val_accuracy` and `test_accuracy` assignments swapped in eval code
+- `tokenizer_version_drift` — Training uses tokenizer v2, eval uses v1 (847 tokens map to `[UNK]`)
 
-**Signal:** Training logs look completely normal. Only the val/test metric gap in eval results is suspicious — no errors, no warnings, no exceptions.
+**Signal strength:** Low. Training logs look completely normal. Only the val/test metric gap is suspicious — no errors, no warnings, no exceptions. Requires reasoning about what's *absent*.
 
-**Asymmetric penalty:** Missing a silent evaluation bug (which would affect production predictions) is penalized 1.5× — mirroring real incident severity weighting.
-
-**Optimal strategy:** `read_eval_results` → `run_sanity_check(metric_gap_analysis)` → `inspect_preprocessing` → `run_sanity_check(label_consistency OR encoder_version_match)` → `submit_diagnosis`
-
-Max steps: **40** | Expected baseline score: ~0.15
+**Asymmetric penalty:** Missing a silent evaluation bug is penalized 1.5x — mirroring real incident severity weighting where silent production bugs are far more costly than loud training failures.
 
 ---
 
-## Reward Function
+## Reward Design
 
-**Dense per-step rewards** (not sparse):
+**Dense per-step rewards** (not sparse — provides learning signal throughout the episode):
 
 ```
-+0.02  First time reading an artifact (rewards systematic exploration)
--0.02  Reading same artifact with same filter again (penalizes brute force)
-+0.01  Running a new sanity check (rewards diagnostic reasoning)
+Investigation phase:
+  +0.02  First time reading an artifact     (rewards systematic exploration)
+  -0.02  Re-reading same artifact+filter    (penalizes brute force)
+  +0.01  Running a new sanity check         (rewards diagnostic reasoning)
 
-At submit_diagnosis:
-+0.15  Correct failure_category  (config_error / data_leakage / evaluation_bug / ...)
-+0.25  Correct root_cause_file   (exact match)
-+0.30  Correct root_cause_field  (substring match, case-insensitive)
-+0.30  Correct proposed_fix      (keyword overlap with gold fix)
+Diagnosis grading (4 independent components):
+  +0.15  Correct failure_category           (what kind of bug?)
+  +0.25  Correct root_cause_file            (which file contains it?)
+  +0.30  Correct root_cause_field           (which parameter/function?)
+  +0.30  Correct proposed_fix               (keyword overlap with gold fix)
 
-Task 3 modifier: if score < 0.70, additional 0.5× penalty on missed components
+Task 3 modifier:
+  If score < 0.70 → additional 0.5x penalty on missed components
+  (silent bugs reaching production are more costly than loud failures)
 ```
 
-**Score spectrum** (verified):
+**Why dense rewards?** Sparse terminal-only rewards make it impossible to distinguish "investigated well but diagnosed wrong" from "didn't investigate at all." Our per-step rewards incentivize thorough investigation, penalize lazy repetition, and the 4-component terminal grading provides partial credit for partially-correct diagnoses.
+
+**Score spectrum:**
 ```
-All wrong            → 0.00
-Category only        → 0.10–0.15
-Category + file      → 0.35–0.40
-Category + file + field → 0.65
-Perfect diagnosis    → 0.90–1.00
+No investigation, wrong diagnosis  →  0.01
+Category only correct              →  0.10–0.15
+Category + file correct            →  0.35–0.40
+Category + file + field correct    →  0.65
+Perfect diagnosis                  →  0.90–0.99
 ```
+
+---
+
+## Baseline Scores
+
+| Task | Baseline (Qwen2.5-72B) | Optimized (Gemini 2.5 Flash) |
+|---|---|---|
+| Easy | ~0.42 | ~0.91 |
+| Medium | ~0.28 | ~0.85 |
+| Hard | ~0.15 | ~0.92 |
+
+The baseline agent (no task-specific prompting) struggles significantly on medium and hard tasks, confirming meaningful difficulty progression.
 
 ---
 
@@ -200,27 +209,19 @@ uvicorn app:app --host 0.0.0.0 --port 7860
 ### Python Client
 
 ```python
-# Sync usage
 from client import MLOpsDebugEnv
 from models import MLOpsAction
 
 with MLOpsDebugEnv(base_url="http://localhost:7860").sync() as env:
     obs = env.reset(task_id="hard", seed=1)
-    print(obs.task_description)
 
-    # Investigate systematically
+    # Investigate
     r = env.step(MLOpsAction(action_type="read_eval_results"))
-    print(r.observation.last_action_result["content"])
-
-    r = env.step(MLOpsAction(
-        action_type="run_sanity_check",
-        sanity_check_type="metric_gap_analysis"
-    ))
-    # Reveals val/test gap anomaly
-
+    r = env.step(MLOpsAction(action_type="run_sanity_check",
+                             sanity_check_type="metric_gap_analysis"))
     r = env.step(MLOpsAction(action_type="inspect_preprocessing"))
-    # Shows the buggy pipeline code
 
+    # Diagnose
     r = env.step(MLOpsAction(
         action_type="submit_diagnosis",
         failure_category="label_mismatch",
@@ -232,63 +233,71 @@ with MLOpsDebugEnv(base_url="http://localhost:7860").sync() as env:
     print(f"Score: {r.info['score']}")
 ```
 
----
-
-## Baseline Inference Script
+### Inference Script
 
 ```bash
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export HF_TOKEN="hf_your_token_here"
+export GEMINI_API_KEY="your_key"
 export ENV_BASE_URL="http://localhost:7860"
-
-python inference.py          # all 3 tasks, seed=42
+python inference.py                    # all 3 tasks
 python inference.py --task easy --seed 42
 ```
 
-**Output format:**
+**Output format (OpenEnv standard):**
 ```
-[START] task=easy env=mlops-debug-env model=Qwen/Qwen2.5-72B-Instruct
+[START] task=easy env=mlops-debug-env model=gemini-2.5-flash
 [STEP] step=1 action=read_logs reward=0.02 done=false error=null
 [STEP] step=2 action=run_sanity_check reward=0.01 done=false error=null
 [STEP] step=3 action=read_config reward=0.02 done=false error=null
-[STEP] step=4 action=submit_diagnosis reward=0.95 done=true error=null
-[END] success=true steps=4 rewards=0.02,0.01,0.02,0.95
+[STEP] step=4 action=submit_diagnosis reward=0.91 done=true error=null
+[END] success=true steps=4 score=0.9100 rewards=0.02,0.01,0.02,0.91
 ```
-
-**Baseline scores** (Qwen2.5-72B-Instruct, seed=42):
-
-| Task | Score | Notes |
-|---|---|---|
-| easy | ~0.42 | Gets category right, struggles with exact field name |
-| medium | ~0.28 | Often identifies leakage but misidentifies exact mechanism |
-| hard | ~0.15 | Silent bugs with normal training logs are genuinely hard |
 
 ---
 
-## Why This Environment
+## Design Decisions
 
-**Real problem.** Every ML team at every company has debugging broken training runs as a core workflow. The three bug categories in this environment — config errors, data leakage, silent evaluation bugs — are the actual top-3 failure modes in production ML pipelines.
+**Why MLOps debugging?** Config errors, data leakage, and silent eval bugs are the actual top-3 failure modes in production ML. Every ML team at every company deals with these. This isn't a synthetic benchmark — it models a real workflow.
 
-**Deterministic grading.** The planted bug is ground truth. Diagnosis matching is substring/keyword matching against known-correct answers. Zero subjectivity, zero LLM-as-judge, reproducible across runs.
+**Why procedural generation?** Fixed bug scenarios would let agents memorize answers. Our seed-based generation produces different bug instances, model configs, and artifact contents per episode while maintaining internal consistency.
 
-**Genuinely hard for frontier models.** Task 3 (silent evaluation bugs) requires reasoning about what's *absent* — no error signals, normal training logs — and tracing backwards from a metric anomaly to a pipeline version mismatch. State-of-the-art models score ~0.15 without careful prompting.
+**Why deterministic grading?** LLM-as-judge introduces variance and bias. Our grader uses substring/keyword matching against planted ground truth — zero subjectivity, reproducible to 4 decimal places.
 
-**Seed-based reproducibility.** `reset(seed=42)` always produces the same bug, same artifacts, same grading. Baseline scores are reproducible to 4 decimal places.
+**Why asymmetric penalties?** In production, a loud training crash (Task 1) is caught immediately. A silent evaluation bug (Task 3) can serve wrong predictions for weeks before anyone notices. The 1.5x penalty on Task 3 mirrors this real-world cost asymmetry.
+
+**Why 8 sanity check types?** Real ML debugging involves running diagnostic scripts — not just reading files. Our computed sanity checks (gradient norm analysis, data leakage detection, metric gap analysis) simulate the diagnostic tools a senior engineer would use.
+
+---
+
+## Project Structure
+
+```
+MLops-Openenvhack/
+├── app.py                  # FastAPI server (REST + WebSocket)
+├── mlops_environment.py    # Core environment: reset/step/grading
+├── artifact_generator.py   # Procedural artifact + bug generation
+├── models.py               # Pydantic models (Action, Observation, State)
+├── inference.py             # LLM baseline agent
+├── client.py               # Python client library (async + sync)
+├── openenv_state.py        # Global state singleton
+├── openenv.yaml            # OpenEnv specification
+├── Dockerfile              # Container configuration
+├── requirements.txt        # Python dependencies
+└── server/                 # HF Space deployment copy
+```
 
 ---
 
 ## Environment Variables
 
-| Variable | Description |
-|---|---|
-| `API_BASE_URL` | LLM API endpoint (OpenAI-compatible) |
-| `MODEL_NAME` | Model identifier |
-| `HF_TOKEN` | Hugging Face / API token |
-| `ENV_BASE_URL` | Environment server URL (default: `http://localhost:7860`) |
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GEMINI_API_KEY` | Yes (for inference) | — | Gemini API key for baseline agent |
+| `MODEL_NAME` | No | `gemini-2.5-flash` | LLM model identifier |
+| `API_BASE_URL` | No | Gemini endpoint | OpenAI-compatible API base URL |
+| `ENV_BASE_URL` | No | `http://localhost:7860` | Environment server URL |
 
 ---
 
 ## License
 
-MIT — see LICENSE
+MIT

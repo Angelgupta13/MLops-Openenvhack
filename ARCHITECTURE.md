@@ -1,85 +1,124 @@
-# Backend Architecture
+# Architecture
 
-## Project Structure
-
-```
-MLops-Openenvhack/
-├── app.py                 # FastAPI server - main entry point
-├── inference.py           # Baseline LLM agent for evaluation
-├── models.py              # Pydantic models (Action, Observation, State)
-├── mlops_environment.py   # Core environment logic
-├── artifact_generator.py  # Procedural bug/artifact generation
-├── client.py              # Python client library
-├── openenv.yaml           # OpenEnv specification
-├── Dockerfile             # Container configuration
-├── requirements.txt       # Python dependencies
-└── README.md             # Documentation
-```
-
-## How It Works
-
-### 1. Server (app.py)
-- Runs FastAPI on port 7860
-- Provides REST endpoints:
-  - `GET /health` - Health check
-  - `POST /reset` - Initialize new task
-  - `POST /step` - Execute action
-  - `GET /state` - Get current state
-  - `GET /tasks` - List available tasks
-  - `GET /openenv/state` - OpenEnv state
-
-### 2. Environment (mlops_environment.py)
-- Manages task state
-- Processes actions through `_handle_*` methods
-- Generates rewards based on agent behavior
-- Tracks artifacts read and sanity checks
-
-### 3. Artifact Generator (artifact_generator.py)
-- Procedurally generates training artifacts with planted bugs
-- Creates realistic: logs, configs, preprocessing code, eval results
-- Supports 9 bug types across 3 difficulty levels
-
-### 4. Inference Agent (inference.py)
-- LLM-powered agent using OpenAI API
-- Reads artifacts, runs sanity checks
-- Submits diagnosis with confidence scoring
-- Implements rate limiting and fallback
-
-## API Flow
+## System Overview
 
 ```
-Client -> app.py (FastAPI)
-           |
-           +-> mlops_environment.py (core logic)
-                    |
-                    +-> artifact_generator.py (bug generation)
-                    |
-                    +-> models.py (data validation)
-                    |
-                    +-> Returns Observation, Reward, Done, Info
+Agent (inference.py)
+    │
+    │  POST /reset, POST /step
+    ▼
+FastAPI Server (app.py)
+    │
+    │  reset(), step()
+    ▼
+MLOpsEnvironment (mlops_environment.py)
+    │
+    ├── ArtifactGenerator (artifact_generator.py)
+    │   └── BUG_CATALOGUE: 9 bug specs across 3 tiers
+    │   └── Procedural generation: config, logs, stats, code, eval, model card
+    │
+    ├── Sanity Check Engine (artifact_generator.py)
+    │   └── 8 computed diagnostics grounded in generated artifacts
+    │
+    ├── Grader (_handle_submit)
+    │   └── 4-component scoring: category + file + field + fix
+    │
+    └── Models (models.py)
+        └── MLOpsAction, MLOpsObservation, MLOpsState, ArtifactMeta
 ```
 
-## Task Flow
+## Data Flow
+
+### Episode Lifecycle
 
 ```
-1. Client POST /reset with task_id (easy/medium/hard)
-2. Environment generates artifacts with planted bug
-3. Client POST /step with action
-4. Environment processes action, returns observation
-5. Agent investigates until diagnosis submitted
-6. Grader scores against planted bug (0.0 - 1.0)
+1. reset(task_id, seed)
+   ├── Random(seed) selects bug from task pool
+   ├── ArtifactGenerator creates 6 consistent artifacts with planted fault
+   └── Returns: MLOpsObservation with task description + artifact metadata
+
+2. step(action) × N
+   ├── read_* actions → return artifact content (reward: +0.02 new, -0.02 duplicate)
+   ├── run_sanity_check → compute diagnostic from artifacts (reward: +0.01 new)
+   ├── query_artifact → return specific field via dot notation
+   └── submit_diagnosis → grade against ground truth (terminal)
+
+3. Grading (_handle_submit)
+   ├── Compare 4 components against BugSpec ground truth
+   ├── Apply hard task penalty if score < 0.70
+   └── Return: score ∈ (0.01, 0.99), breakdown, ground truth
 ```
 
-## Data Models
+### Determinism Guarantees
 
-### Action Types
-- read_config, read_logs, check_dataset_stats
-- inspect_preprocessing, read_eval_results
-- run_sanity_check, query_artifact
-- submit_diagnosis
+- `random.Random(seed)` for bug selection and artifact variation
+- `np.random.RandomState(seed)` for numeric distributions
+- No external state, no network calls during generation
+- Same (task_id, seed) always produces identical episode
 
-### Reward Structure
-- +0.02 per new artifact read
-- -0.02 per duplicate read
-- +0.01 per new sanity check
-- Terminal: +0.15 category + 0.25 file + 0.30 field + 0.30 fix
+## Component Responsibilities
+
+### app.py — API Layer
+- FastAPI server on port 7860
+- REST endpoints: `/reset`, `/step`, `/state`, `/health`, `/tasks`
+- WebSocket endpoint: `/ws` for streaming interaction
+- Stateless request handling; delegates to MLOpsEnvironment
+
+### mlops_environment.py — Core Logic
+- Episode state management (step count, artifacts read, score)
+- Action routing to handlers
+- Grading logic with 4-component scoring
+- `grade_task()` standalone grader for OpenEnv validation
+
+### artifact_generator.py — Content Generation
+- `BugSpec` dataclass: category, file, field, gold_fix, difficulty
+- `BUG_CATALOGUE`: 9 bug specifications
+- `ArtifactGenerator`: produces 6 artifacts per episode
+- `run_sanity_check()`: 8 computed diagnostic checks
+
+### models.py — Data Models
+- `MLOpsAction`: 8 action types with typed parameters
+- `MLOpsObservation`: full agent observation per step
+- `MLOpsState`: internal state for debugging/RL harness
+- `ArtifactMeta`: artifact metadata (name, description, size hint)
+
+### inference.py — Baseline Agent
+- LLM-powered agent using Gemini via OpenAI-compatible API
+- Investigation phase: reads artifacts, runs sanity checks
+- Diagnosis phase: submits structured diagnosis
+- Fallback logic for unparseable LLM output
+- Rate limiting with exponential backoff
+
+### client.py — Client Library
+- `MLOpsDebugEnv`: async httpx client
+- `SyncMLOpsDebugEnv`: synchronous wrapper
+- Context manager support for connection lifecycle
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | API info |
+| GET | `/health` | Health check |
+| GET | `/tasks` | List available tasks |
+| POST | `/reset` | Start new episode |
+| POST | `/step` | Execute action |
+| GET | `/state` | Current episode state |
+| GET | `/openenv/state` | OpenEnv framework state |
+| WS | `/ws` | WebSocket interface |
+
+## Reward Architecture
+
+The reward function has two layers:
+
+**Per-step (dense):** Encourages systematic investigation
+- New artifact read: +0.02 (explore broadly)
+- Duplicate read: -0.02 (don't brute force)
+- New sanity check: +0.01 (use diagnostics)
+
+**Terminal (graded):** Evaluates diagnosis quality
+- 4 independent components sum to max 1.0
+- Keyword/substring matching (no LLM judge)
+- Hard task asymmetric penalty (1.5x on missed components)
+
+This two-layer design means an agent that investigates thoroughly but diagnoses wrong still earns per-step rewards, while an agent that submits immediately with a lucky guess earns terminal reward but misses exploration bonuses.

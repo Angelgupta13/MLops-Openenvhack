@@ -5,7 +5,7 @@ description = "MLOps Pipeline Debugger - OpenEnv-compatible RL environment for M
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "MLOps Team"}]
+authors = [{name = "Code Clashers"}]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -21,7 +21,8 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "uvicorn:main"
+mlops-server = "uvicorn:main"
+mlops-infer = "inference:main"
 
 [project.optional-dependencies]
 dev = [
