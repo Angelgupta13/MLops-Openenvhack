@@ -39,5 +39,6 @@ checkpoints/
 *.tmp
 temp/
 
-# Research paper (private)
-paper/
+# Research (private)
+research/
+sources/
