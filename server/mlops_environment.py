@@ -159,7 +159,7 @@ class MLOpsEnvironment:
 
     def step(self, action: MLOpsAction) -> Tuple[MLOpsObservation, float, bool, Dict[str, Any]]:
         if self._done:
-            return self._build_obs({"status": "done", "message": "Episode over. Call reset()."}), 0.0, True, {}
+            return self._build_obs({"status": "done", "message": "Episode over. Call reset()."}), 0.01, True, {"score": max(0.01, min(0.99, self._current_score))}
 
         self._step_count += 1
         reward = 0.0
@@ -170,7 +170,7 @@ class MLOpsEnvironment:
             self._done = True
             score = max(0.01, self._current_score)
             result = {"status": "timeout", "message": f"Max steps ({self._max_steps}) reached.", "score": score}
-            return self._build_obs(result), 0.0, True, {"score": score, "reason": "timeout"}
+            return self._build_obs(result), score, True, {"score": score, "reason": "timeout"}
 
         atype = action.action_type
 
@@ -458,4 +458,4 @@ def grade_task(task_id: str, seed: int, diagnosis: Dict[str, Any]) -> float:
     env._artifacts_read = list(env._artifacts.keys())
     action = MLOpsAction(action_type="submit_diagnosis", **diagnosis)
     _, reward, _, info = env.step(action)
-    return info.get("score", 0.0)
+    return max(0.01, min(0.99, info.get("score", 0.01)))
