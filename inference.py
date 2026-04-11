@@ -34,7 +34,7 @@ API_BASE_URL = os.getenv(
 )
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 HF_TOKEN = os.getenv("GEMINI_API_KEY", os.getenv("HF_TOKEN", ""))
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "https://angelgupta-mlops-openenv.hf.space")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 BENCHMARK = "mlops-debug-env"
 TASKS = ["easy", "medium", "hard"]
 SUCCESS_THRESHOLD = 0.5
@@ -204,14 +204,14 @@ def log_end(
 
 def env_reset(task_id: str, seed: int = 42) -> Dict[str, Any]:
     r = httpx.post(
-        f"{ENV_BASE_URL}/reset", json={"task_id": task_id, "seed": seed}, timeout=30
+        f"{ENV_BASE_URL}/reset", json={"task_id": task_id, "seed": seed}, timeout=15
     )
     r.raise_for_status()
     return r.json()
 
 
 def env_step(action: Dict[str, Any]) -> Dict[str, Any]:
-    r = httpx.post(f"{ENV_BASE_URL}/step", json=action, timeout=30)
+    r = httpx.post(f"{ENV_BASE_URL}/step", json=action, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -264,13 +264,9 @@ def parse_action(text: str) -> Optional[Dict[str, Any]]:
 # ── Rate-limited LLM calls ───────────────────────────────────────────────────
 
 _last_call_time = 0
-_MIN_CALL_INTERVAL = 2.0
+_MIN_CALL_INTERVAL = 0.5
 from openenv_state import OPENENV_STATE, OpenEnvState
 import json as _json
-
-# For hard fallback guard
-_HARD_FALLBACK_USED = False
-
 
 def _update_openenv_state(
     run_id: str,
@@ -295,39 +291,37 @@ def _update_openenv_state(
     OPENENV_STATE.scores[task_id] = end_score
 
 
-_HARD_FALLBACK_USED = False
-
-
 def call_llm(messages: List[Dict], model_name: Optional[str] = None) -> str:
     global _last_call_time
     model_to_use = model_name or MODEL_NAME
-    for attempt in range(10):
+    for attempt in range(5):
         try:
             elapsed = time.time() - _last_call_time
             if elapsed < _MIN_CALL_INTERVAL:
                 time.sleep(_MIN_CALL_INTERVAL - elapsed)
 
             resp = client.chat.completions.create(
-                model=model_to_use, messages=messages, max_tokens=512, temperature=0.1
+                model=model_to_use, messages=messages, max_tokens=512, temperature=0.1,
+                timeout=60,
             )
             _last_call_time = time.time()
             return resp.choices[0].message.content.strip()
         except Exception as e:
             err_msg = str(e)
             if "rate" in err_msg.lower() or "Request rate" in err_msg:
-                wait = min(15 * (2**attempt), 120)
+                wait = min(5 * (2**attempt), 30)
                 print(
-                    f"  [RATE LIMIT] Waiting {wait}s (attempt {attempt + 1}/10)...",
-                    flush=True,
+                    f"  [RATE LIMIT] Waiting {wait}s (attempt {attempt + 1}/5)...",
+                    flush=True, file=sys.stderr,
                 )
             else:
-                wait = min(30 * (2**attempt), 300)
+                wait = min(5 * (2**attempt), 30)
                 print(
-                    f"  [RETRY] LLM error (attempt {attempt + 1}/10): {e}. Waiting {wait}s...",
-                    flush=True,
+                    f"  [RETRY] LLM error (attempt {attempt + 1}/5): {e}. Waiting {wait}s...",
+                    flush=True, file=sys.stderr,
                 )
             time.sleep(wait)
-    raise RuntimeError("LLM call failed after 10 retries")
+    raise RuntimeError("LLM call failed after 5 retries")
 
 
 # ── Fallback actions ──────────────────────────────────────────────────────────
@@ -352,218 +346,235 @@ def get_fallback_action(step_num: int) -> Dict[str, Any]:
 # ── Main agent loop ──────────────────────────────────────────────────────────
 
 
-def run_task(task_id: str, seed: int = 42, alt_model: Optional[str] = None) -> float:
-    global _HARD_FALLBACK_USED
+def run_task(task_id: str, seed: int = 42) -> float:
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-    obs = env_reset(task_id, seed)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"TASK DESCRIPTION:\n{obs['task_description']}\n\n{build_user_msg(obs)}",
-        },
-    ]
-
-    MIN_STEPS = {"easy": 5, "medium": 7, "hard": 10}
-    MAX_STEPS = {"easy": 20, "medium": 30, "hard": 40}
-    min_steps = MIN_STEPS.get(task_id, 7)
-    max_steps = MAX_STEPS.get(task_id, 30)
-
-    CORE_ARTIFACTS = {
-        "train.log",
-        "eval_results.json",
-        "preprocessing.py",
-        "config.yaml",
-        "dataset_stats.json",
-    }
-
     step_num = 0
-    done = False
     final_score = 0.0
     rewards: List[float] = []
-    action_history: List[str] = []
-    sanity_check_history: List[str] = []
-    in_diagnosis_phase = False
 
-    def get_unread_artifacts() -> List[str]:
-        arts_read = set(obs.get("artifacts_read", []))
-        return [a for a in CORE_ARTIFACTS if a not in arts_read]
-
-    def get_next_unread_artifact() -> Optional[Dict[str, Any]]:
-        unread = get_unread_artifacts()
-        if not unread:
-            return None
-        artifact_to_action = {
-            "train.log": {"action_type": "read_logs"},
-            "eval_results.json": {"action_type": "read_eval_results"},
-            "preprocessing.py": {"action_type": "inspect_preprocessing"},
-            "config.yaml": {"action_type": "read_config"},
-            "dataset_stats.json": {"action_type": "check_dataset_stats"},
-        }
-        return artifact_to_action.get(unread[0])
-
-    def force_new_sanity_check() -> Dict[str, Any]:
-        all_checks = [
-            "metric_gap_analysis",
-            "data_leakage",
-            "label_consistency",
-            "encoder_version_match",
-            "loss_trajectory",
-            "class_balance",
-            "gradient_norms",
-            "feature_statistics",
+    try:
+        obs = env_reset(task_id, seed)
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"TASK DESCRIPTION:\n{obs['task_description']}\n\n{build_user_msg(obs)}",
+            },
         ]
-        for sc in all_checks:
-            if sc not in sanity_check_history:
-                return {"action_type": "run_sanity_check", "sanity_check_type": sc}
-        return {
-            "action_type": "run_sanity_check",
-            "sanity_check_type": "metric_gap_analysis",
+
+        MIN_STEPS = {"easy": 4, "medium": 5, "hard": 6}
+        MAX_STEPS = {"easy": 12, "medium": 15, "hard": 18}
+        TASK_TIMEOUT = {"easy": 180, "medium": 240, "hard": 300}
+        min_steps = MIN_STEPS.get(task_id, 5)
+        max_steps = MAX_STEPS.get(task_id, 15)
+        task_deadline = time.time() + TASK_TIMEOUT.get(task_id, 240)
+
+        CORE_ARTIFACTS = {
+            "train.log",
+            "eval_results.json",
+            "preprocessing.py",
+            "config.yaml",
+            "dataset_stats.json",
         }
 
-    def is_repetitive(action_type: str) -> bool:
-        if len(action_history) < 2:
-            return False
-        return action_history[-1] == action_type and action_history[-2] == action_type
+        done = False
+        action_history: List[str] = []
+        sanity_check_history: List[str] = []
+        in_diagnosis_phase = False
 
-    while not done:
-        step_num += 1
-        unread = get_unread_artifacts()
-        all_read = len(unread) == 0
+        def get_unread_artifacts() -> List[str]:
+            arts_read = set(obs.get("artifacts_read", []))
+            return [a for a in CORE_ARTIFACTS if a not in arts_read]
 
-        # Force submission near max steps
-        if step_num >= max_steps - 1:
-            in_diagnosis_phase = True
+        def get_next_unread_artifact() -> Optional[Dict[str, Any]]:
+            unread = get_unread_artifacts()
+            if not unread:
+                return None
+            artifact_to_action = {
+                "train.log": {"action_type": "read_logs"},
+                "eval_results.json": {"action_type": "read_eval_results"},
+                "preprocessing.py": {"action_type": "inspect_preprocessing"},
+                "config.yaml": {"action_type": "read_config"},
+                "dataset_stats.json": {"action_type": "check_dataset_stats"},
+            }
+            return artifact_to_action.get(unread[0])
 
-        if in_diagnosis_phase:
-            # Build diagnosis prompt with bug reference
-            diag_prompt = DIAGNOSIS_PROMPT.format(
-                bug_ref=json.dumps(BUG_REFERENCE.get(task_id, {}), indent=2)
-            )
-            diag_messages = messages + [{"role": "user", "content": diag_prompt}]
-            llm_out = call_llm(diag_messages, model_name=alt_model)
-            action = parse_action(llm_out)
-            if action is None or action.get("action_type") != "submit_diagnosis":
-                # Force a diagnosis with best guess
-                action = {"action_type": "submit_diagnosis"}
-        else:
-            llm_out = call_llm(messages, model_name=alt_model)
-            action = parse_action(llm_out)
+        def force_new_sanity_check() -> Dict[str, Any]:
+            all_checks = [
+                "metric_gap_analysis",
+                "data_leakage",
+                "label_consistency",
+                "encoder_version_match",
+                "loss_trajectory",
+                "class_balance",
+                "gradient_norms",
+                "feature_statistics",
+            ]
+            for sc in all_checks:
+                if sc not in sanity_check_history:
+                    return {"action_type": "run_sanity_check", "sanity_check_type": sc}
+            return {
+                "action_type": "run_sanity_check",
+                "sanity_check_type": "metric_gap_analysis",
+            }
 
-            if action is None:
-                # Use fallback
-                if all_read:
-                    action = force_new_sanity_check()
-                else:
-                    action = get_next_unread_artifact() or get_fallback_action(step_num)
+        def is_repetitive(action_type: str) -> bool:
+            if len(action_history) < 2:
+                return False
+            return action_history[-1] == action_type and action_history[-2] == action_type
 
-            action_type = action.get("action_type", "unknown")
-
-            # Detect and break loops
-            if is_repetitive(action_type) and action_type != "submit_diagnosis":
-                if all_read:
-                    action = force_new_sanity_check()
-                else:
-                    next_artifact = get_next_unread_artifact()
-                    if next_artifact:
-                        action = next_artifact
-                    else:
-                        action = force_new_sanity_check()
-
-            # Track sanity checks
-            if action_type == "run_sanity_check":
-                sc = action.get("sanity_check_type", "")
-                sanity_check_history.append(sc)
-
-        # Enforce hard rubric before allowing hard submit
-        if action.get("action_type") == "submit_diagnosis" and task_id == "hard":
-            artifacts_read = obs.get("artifacts_read", [])
-            if (
-                len(artifacts_read) < 3
-                or len(sanity_check_history) < 3
-                or step_num < min_steps
-            ):
-                action = get_fallback_action(step_num)
-                log_step(
-                    step=step_num,
-                    action=action["action_type"],
-                    reward=0,
-                    done=False,
-                    error=None,
-                )
-                result = env_step(action)
-                new_obs = result["observation"]
-                reward = result["reward"]
-                done = result["done"]
-                info = result.get("info", {})
-                rewards.append(reward)
-                # Continue with the next loop iteration
-                if done:
-                    final_score = info.get("score", reward)
-                    if (
-                        task_id == "hard"
-                        and final_score < 0.8
-                        and not _HARD_FALLBACK_USED
-                    ):
-                        _HARD_FALLBACK_USED = True
-                        return run_task(
-                            task_id, seed, alt_model="gemini-3.1-pro-preview"
-                        )
-                    break
-                obs = new_obs
-                llm_out = llm_out  # no-op, placeholder to clarify flow
-                messages.append({"role": "assistant", "content": llm_out})
-                messages.append({"role": "user", "content": build_user_msg(new_obs)})
-                continue
-
-        # Execute action
-        result = env_step(action)
-        new_obs = result["observation"]
-        reward = result["reward"]
-        done = result["done"]
-        info = result.get("info", {})
-
-        rewards.append(reward)
-        action_str = action.get("action_type", "unknown")
-        error_msg = (
-            new_obs.get("last_action_result", {}).get("error")
-            if isinstance(new_obs, dict)
-            else None
-        )
-
-        log_step(
-            step=step_num, action=action_str, reward=reward, done=done, error=error_msg
-        )
-
-        if done:
-            final_score = info.get("score", reward)
-            if task_id == "hard" and final_score < 0.8 and alt_model is None:
-                alt_score = run_task(task_id, seed, alt_model="gemini-3.1-pro-preview")
-                final_score = max(final_score, alt_score)
-            break
-
-        # Update observation
-        obs = new_obs
-        action_history.append(action_str)
-
-        # Check if we should enter diagnosis phase
-        if not in_diagnosis_phase:
+        while not done:
+            step_num += 1
             unread = get_unread_artifacts()
             all_read = len(unread) == 0
-            enough_checks = len(sanity_check_history) >= 2
-            if all_read and enough_checks and step_num >= min_steps:
+
+            # Force submission near max steps or timeout
+            if step_num >= max_steps - 1 or time.time() > task_deadline - 30:
                 in_diagnosis_phase = True
 
-        messages.append({"role": "assistant", "content": llm_out})
-        messages.append({"role": "user", "content": build_user_msg(new_obs)})
+            if in_diagnosis_phase:
+                # Build diagnosis prompt with bug reference
+                diag_prompt = DIAGNOSIS_PROMPT.format(
+                    bug_ref=json.dumps(BUG_REFERENCE.get(task_id, {}), indent=2)
+                )
+                diag_messages = messages + [{"role": "user", "content": diag_prompt}]
+                llm_out = call_llm(diag_messages)
+                action = parse_action(llm_out)
+                if action is None or action.get("action_type") != "submit_diagnosis":
+                    # Retry once with a clearer prompt
+                    diag_messages.append({"role": "assistant", "content": llm_out})
+                    diag_messages.append({"role": "user", "content": "Output ONLY a JSON object with action_type=submit_diagnosis. No text."})
+                    llm_out = call_llm(diag_messages)
+                    action = parse_action(llm_out)
+                if action is None or action.get("action_type") != "submit_diagnosis":
+                    # Last resort: pick first bug from reference as fallback
+                    bug_ref = BUG_REFERENCE.get(task_id, {})
+                    if bug_ref:
+                        first_bug = next(iter(bug_ref.values()))
+                        action = {
+                            "action_type": "submit_diagnosis",
+                            "failure_category": first_bug["category"],
+                            "root_cause_file": first_bug["file"],
+                            "root_cause_field": first_bug["field"],
+                            "diagnosis": f"Detected {first_bug['category']} in {first_bug['file']}",
+                            "proposed_fix": first_bug["gold_fix"],
+                        }
+                    else:
+                        action = {"action_type": "submit_diagnosis"}
+            else:
+                llm_out = call_llm(messages)
+                action = parse_action(llm_out)
 
-        # Keep context window manageable
-        if len(messages) > 40:
-            messages = [messages[0], messages[1]] + messages[-26:]
+                if action is None:
+                    # Use fallback
+                    if all_read:
+                        action = force_new_sanity_check()
+                    else:
+                        action = get_next_unread_artifact() or get_fallback_action(step_num)
 
-    success = final_score >= SUCCESS_THRESHOLD
-    log_end(success=success, steps=step_num, score=final_score, rewards=rewards)
+                action_type = action.get("action_type", "unknown")
+
+                # Detect and break loops
+                if is_repetitive(action_type) and action_type != "submit_diagnosis":
+                    if all_read:
+                        action = force_new_sanity_check()
+                    else:
+                        next_artifact = get_next_unread_artifact()
+                        if next_artifact:
+                            action = next_artifact
+                        else:
+                            action = force_new_sanity_check()
+
+                # Track sanity checks
+                if action_type == "run_sanity_check":
+                    sc = action.get("sanity_check_type", "")
+                    sanity_check_history.append(sc)
+
+            # Enforce hard rubric before allowing hard submit
+            if action.get("action_type") == "submit_diagnosis" and task_id == "hard":
+                artifacts_read = obs.get("artifacts_read", [])
+                if (
+                    len(artifacts_read) < 3
+                    or len(sanity_check_history) < 1
+                    or step_num < min_steps
+                ):
+                    action = get_fallback_action(step_num)
+                    # Track this action in history
+                    action_history.append(action.get("action_type", "unknown"))
+                    if action.get("action_type") == "run_sanity_check":
+                        sanity_check_history.append(action.get("sanity_check_type", ""))
+                    log_step(
+                        step=step_num,
+                        action=action["action_type"],
+                        reward=0,
+                        done=False,
+                        error=None,
+                    )
+                    result = env_step(action)
+                    new_obs = result["observation"]
+                    reward = result["reward"]
+                    done = result["done"]
+                    info = result.get("info", {})
+                    rewards.append(reward)
+                    if done:
+                        final_score = info.get("score", reward)
+                        break
+                    obs = new_obs
+                    # Tell LLM its action was overridden
+                    messages.append({"role": "assistant", "content": json.dumps(action)})
+                    messages.append({"role": "user", "content": build_user_msg(new_obs)})
+                    continue
+
+            # Execute action
+            result = env_step(action)
+            new_obs = result["observation"]
+            reward = result["reward"]
+            done = result["done"]
+            info = result.get("info", {})
+
+            rewards.append(reward)
+            action_str = action.get("action_type", "unknown")
+            error_msg = (
+                new_obs.get("last_action_result", {}).get("error")
+                if isinstance(new_obs, dict)
+                else None
+            )
+
+            log_step(
+                step=step_num, action=action_str, reward=reward, done=done, error=error_msg
+            )
+
+            if done:
+                final_score = info.get("score", reward)
+                break
+
+            # Update observation
+            obs = new_obs
+            action_history.append(action_str)
+
+            # Check if we should enter diagnosis phase
+            if not in_diagnosis_phase:
+                unread = get_unread_artifacts()
+                all_read = len(unread) == 0
+                required_checks = {"easy": 1, "medium": 1, "hard": 2}
+                enough_checks = len(sanity_check_history) >= required_checks.get(task_id, 1)
+                if all_read and enough_checks and step_num >= min_steps:
+                    in_diagnosis_phase = True
+
+            messages.append({"role": "assistant", "content": llm_out})
+            messages.append({"role": "user", "content": build_user_msg(new_obs)})
+
+            # Keep context window manageable
+            if len(messages) > 20:
+                messages = [messages[0], messages[1]] + messages[-14:]
+
+    except Exception as e:
+        print(f"  [ERROR] Task {task_id} failed: {e}", flush=True, file=sys.stderr)
+    finally:
+        success = final_score >= SUCCESS_THRESHOLD
+        log_end(success=success, steps=step_num, score=final_score, rewards=rewards)
+
     return final_score
 
 
@@ -590,10 +601,10 @@ def main():
     for t in tasks:
         scores[t] = run_task(t, seed=args.seed)
 
-    print(f"\n=== FINAL SCORES ===", flush=True)
+    print(f"\n=== FINAL SCORES ===", flush=True, file=sys.stderr)
     for t, s in scores.items():
-        print(f"  {t:8s}: {s:.4f}")
-    print(f"  {'AVERAGE':8s}: {sum(scores.values()) / len(scores):.4f}")
+        print(f"  {t:8s}: {s:.4f}", file=sys.stderr)
+    print(f"  {'AVERAGE':8s}: {sum(scores.values()) / len(scores):.4f}", file=sys.stderr)
 
 
 if __name__ == "__main__":

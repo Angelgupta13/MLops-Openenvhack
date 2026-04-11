@@ -6,3 +6,4 @@ openai==1.51.0
 websockets==13.1
 numpy==1.26.4
 python-multipart==0.0.12
+python-dotenv>=1.0.0
